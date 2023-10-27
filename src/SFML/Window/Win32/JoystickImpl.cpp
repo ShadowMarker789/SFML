@@ -290,6 +290,10 @@ void JoystickImpl::GamepadAdded(const winrt::Windows::Foundation::IInspectable, 
         }
     }
 
+    auto iunknown = controller.as<IUnknown>().get();
+
+    iunknown->AddRef();
+
     std::cout << "Gamepad added " << &controller << "\n\r";
 }
 void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
@@ -311,6 +315,10 @@ void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable
             gamepads[i] = nullptr;
         }
     }
+
+    auto iunknown = controller.as<IUnknown>().get();
+
+    iunknown->Release();
 
     std::cout << "Gamepad removed " << &controller << "\n\r";
 }
