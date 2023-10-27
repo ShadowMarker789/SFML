@@ -97,22 +97,12 @@ JoystickState JoystickImpl::update()
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    Gamepad* gamepad = nullptr;
-    RawGameController* rawCon  = nullptr;
-
 
     auto pads = Gamepad::Gamepads();
 
     if (pads.Size() > m_index)
     {
-        gamepad = &(pads.GetAt(m_index));
-    }
-
-    
-
-    if (gamepad != nullptr)
-    {
-        SetStateFromGamepad(*gamepad);
+        SetStateFromGamepad(pads.GetAt(m_index));
     }
     else
     {
@@ -120,12 +110,7 @@ JoystickState JoystickImpl::update()
 
         if (rawCons.Size() > m_index)
         {
-            rawCon = &(rawCons.GetAt(m_index));
-        }
-
-        if (rawCon != nullptr)
-        {
-            SetStateFromRawController(*rawCon);
+            SetStateFromRawController(rawCons.GetAt(m_index));
         }
     }
 
@@ -134,13 +119,20 @@ JoystickState JoystickImpl::update()
 
 void JoystickImpl::SetStateFromGamepad(const Gamepad& gamepad)
 {
-    std::cout << "Gamepad State Set\n\r";
+    //std::cout << "Gamepad State Set\n\r";
 
     auto state = gamepad.GetCurrentReading();
 
-    std::cout << "left trigger: " << state.LeftTrigger << " right trigger: " << state.RightTrigger << "\n\r";
+    //std::cout << "left trigger: " << state.LeftTrigger << " right trigger: " << state.RightTrigger << "\n\r";
 
-    m_state = JoystickState();
+
+
+    m_state.axes[Joystick::Axis::X] = state.LeftThumbstickX;
+    m_state.axes[Joystick::Axis::Y] = state.LeftThumbstickY;
+    m_state.axes[Joystick::Axis::U] = state.RightThumbstickX;
+    m_state.axes[Joystick::Axis::V] = state.RightThumbstickY;
+    m_state.axes[Joystick::Axis::Z] = state.LeftTrigger;
+    m_state.axes[Joystick::Axis::R] = state.RightTrigger;
 }
 
 void JoystickImpl::SetStateFromRawController(const RawGameController& controller)
