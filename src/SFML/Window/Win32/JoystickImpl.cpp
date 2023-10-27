@@ -133,6 +133,8 @@ void JoystickImpl::SetStateFromGamepad(const Gamepad& gamepad)
 
     auto state = gamepad.GetCurrentReading();
 
+    std::cout << "left trigger: " << state.LeftTrigger << " right trigger: " << state.RightTrigger << "\n\r";
+
     m_state = JoystickState();
 }
 
