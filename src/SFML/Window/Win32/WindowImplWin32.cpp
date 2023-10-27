@@ -216,7 +216,11 @@ m_cursorGrabbed(m_fullscreen)
     if (m_handle)
     {
         if (handleCount == 0)
+        {
+
+
             JoystickImpl::setLazyUpdates(true);
+        }
 
         ++handleCount;
     }

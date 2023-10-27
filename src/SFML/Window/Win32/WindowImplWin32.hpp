@@ -29,8 +29,7 @@
 ////////////////////////////////////////////////////////////
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/WindowImpl.hpp>
-
-#include <SFML/System/Win32/WindowsHeader.hpp>
+#include "GameInput.h"
 
 
 namespace sf
@@ -302,6 +301,7 @@ private:
     bool          m_mouseInside{};   //!< Mouse is inside the window?
     bool          m_fullscreen{};    //!< Is the window fullscreen?
     bool          m_cursorGrabbed{}; //!< Is the mouse cursor trapped?
+    IGameInput*  m_gameInput;
 };
 
 } // namespace priv
