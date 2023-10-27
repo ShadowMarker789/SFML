@@ -123,7 +123,6 @@ private:
 
     static void ControllerAdded(const winrt::Windows::Foundation::IInspectable, RawGameController const& controller);
     static void ControllerRemoved(const winrt::Windows::Foundation::IInspectable, RawGameController const& controller);
-    static void RefreshControllers();
 
     unsigned int             m_index;
     JoystickState            m_state;

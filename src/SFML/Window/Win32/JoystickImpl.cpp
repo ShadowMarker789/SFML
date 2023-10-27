@@ -25,26 +25,27 @@
 ////////////////////////////////////////////////////////////
 // Headers
 ////////////////////////////////////////////////////////////
+#include "concrt.h"
+#include "winrt/Windows.Foundation.Collections.h"
+#include "winrt/Windows.Gaming.Input.h"
+
 #include <SFML/Window/JoystickImpl.hpp>
+
 #include <SFML/System/Clock.hpp>
 #include <SFML/System/Err.hpp>
 #include <SFML/System/Time.hpp>
 #include <SFML/System/Win32/WindowsHeader.hpp>
 
 #include <algorithm>
+#include <inspectable.h>
 #include <iomanip>
+#include <iostream>
 #include <ostream>
 #include <regstr.h>
 #include <sstream>
 #include <string>
 #include <tchar.h>
 #include <vector>
-#include "concrt.h"
-#include <inspectable.h>
-#include "winrt/Windows.Gaming.Input.h"
-#include "winrt/Windows.Foundation.Collections.h"
-
-#include <iostream>
 
 using namespace winrt;
 using namespace Windows::Gaming::Input;
@@ -52,13 +53,6 @@ using namespace Windows::Foundation::Collections;
 
 namespace
 {
-
-struct JoystickRecord
-{
-    GUID         guid;
-    unsigned int index;
-    bool         plugged;
-};
 
 std::vector<RawGameController> controllers;
 
@@ -88,28 +82,12 @@ void JoystickImpl::initialize()
     concurrency::critical_section::scoped_lock lock{joystickListLock};
     controllerAddedToken   = RawGameController::RawGameControllerAdded(ControllerAdded);
     controllerRemovedToken = RawGameController::RawGameControllerRemoved(ControllerRemoved);
-
-    RefreshControllers();
-}
-
-void JoystickImpl::RefreshControllers()
-{
-    controllers.clear();
-    for (auto const& rawGameController : RawGameController::RawGameControllers())
-    {
-        auto it{std::find(begin(controllers), end(controllers), rawGameController)};
-
-        if (it == end(controllers))
-        {
-            controllers.push_back(rawGameController);
-        }
-    }
 }
 
 ////////////////////////////////////////////////////////////
 void JoystickImpl::cleanup()
 {
-    // TODO: Clean up 
+    // TODO: Clean up
 }
 
 JoystickState JoystickImpl::update()
@@ -119,9 +97,9 @@ JoystickState JoystickImpl::update()
 
     auto& controller = controllers.at(m_index);
 
-    auto buttons = winrt::array_view<bool>(m_state.buttons, &m_state.buttons[31]);
+    auto   buttons = winrt::array_view<bool>(m_state.buttons, &m_state.buttons[31]);
     double axesArray[8];
-    auto axes      = winrt::array_view<double>(axesArray, &axesArray[7]);
+    auto   axes = winrt::array_view<double>(axesArray, &axesArray[7]);
 
     auto switchCount = controller.SwitchCount();
 
@@ -159,10 +137,7 @@ JoystickCaps JoystickImpl::getCapabilities()
 
 void JoystickImpl::updateConnections()
 {
-    // figure out what to do here?
-    concurrency::critical_section::scoped_lock lock{joystickListLock};
-
-    RefreshControllers();
+    // Do nothing 
 }
 
 void JoystickImpl::setLazyUpdates(bool lazy)
@@ -175,15 +150,17 @@ void JoystickImpl::setLazyUpdates(bool lazy)
     }
     else
     {
-        // todo: don't be lazy 
+        // todo: don't be lazy
     }
 }
 
-void JoystickImpl::ControllerAdded(const winrt::Windows::Foundation::IInspectable, RawGameController const& controller)
+void JoystickImpl::ControllerAdded(const winrt::Windows::Foundation::IInspectable, const RawGameController& controller)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
     controllers.push_back(controller);
+
+    std::cout << "Controller added\n\r";
 }
 
 bool JoystickImpl::open(int index)
@@ -203,7 +180,7 @@ sf::Joystick::Identification JoystickImpl::getIdentification()
     return sf::Joystick::Identification();
 }
 
-void JoystickImpl::ControllerRemoved(const winrt::Windows::Foundation::IInspectable, RawGameController const& controller)
+void JoystickImpl::ControllerRemoved(const winrt::Windows::Foundation::IInspectable, const RawGameController& controller)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
@@ -215,6 +192,8 @@ void JoystickImpl::ControllerRemoved(const winrt::Windows::Foundation::IInspecta
             controllers.erase(controllers.begin() + i);
         }
     }
+
+    std::cout << "Controller removed\n\r";
 }
 
 } // namespace sf::priv
