@@ -121,16 +121,21 @@ private:
     // Member data
     ////////////////////////////////////////////////////////////
 
+    unsigned int             m_index;
+    JoystickState            m_state;
+    JoystickCaps             m_caps;
+    Joystick::Identification m_identification;
+
+
+
     static void GamepadAdded(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller);
     static void GamepadRemoved(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller);
 
     static void RawControllerAdded(const winrt::Windows::Foundation::IInspectable, const RawGameController& controller);
     static void RawControllerRemoved(const winrt::Windows::Foundation::IInspectable, const RawGameController& controller);
 
-    unsigned int             m_index;
-    JoystickState            m_state;
-    JoystickCaps             m_caps;
-    Joystick::Identification m_identification;
+    void SetStateFromGamepad(const Gamepad& gamepad);
+    void SetStateFromRawController(const RawGameController& controller);
 };
 
 } // namespace sf::priv

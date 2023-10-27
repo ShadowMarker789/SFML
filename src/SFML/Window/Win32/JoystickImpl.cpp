@@ -104,9 +104,37 @@ void JoystickImpl::cleanup()
 JoystickState JoystickImpl::update()
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
-    return m_state;
 
-    /*auto& controller = *rawGameControllers[m_index];
+    auto gamepad = gamepads[m_index];
+
+    if (gamepad != nullptr)
+    {
+        SetStateFromGamepad(*gamepad);
+    }
+    else
+    {
+        auto rawCon = rawGameControllers[m_index];
+        if (rawCon != nullptr)
+        {
+            SetStateFromRawController(*rawCon);
+        }
+    }
+
+    return m_state;
+}
+
+void JoystickImpl::SetStateFromGamepad(const Gamepad& gamepad)
+{
+    std::cout << "Gamepad State Set\n\r";
+
+    auto state = gamepad.GetCurrentReading();
+
+    m_state = JoystickState();
+}
+
+void JoystickImpl::SetStateFromRawController(const RawGameController& controller)
+{
+    std::cout << "Raw Controller State Set\n\r";
 
     auto   buttons = winrt::array_view<bool>(m_state.buttons, &m_state.buttons[31]);
     double axesArray[8];
@@ -117,11 +145,9 @@ JoystickState JoystickImpl::update()
     std::vector<GameControllerSwitchPosition> switchPoss(switchCount);
     auto switches = winrt::array_view<GameControllerSwitchPosition>(switchPoss.data(), &switchPoss[switchCount - 1]);
 
-    controller.GetCurrentReading(buttons, switches, axes);
+    auto state = controller.GetCurrentReading(buttons, switches, axes);
 
-    std::cout << "FUCK! ";
-
-    return m_state;*/
+    m_state = JoystickState();
 }
 
 
@@ -241,11 +267,11 @@ void JoystickImpl::RawControllerRemoved(const winrt::Windows::Foundation::IInspe
 
 void JoystickImpl::GamepadAdded(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
-    std::cout << "Gamepad added " << &controller;
+    std::cout << "Gamepad added " << &controller << "\n\r";
 }
 void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
-    std::cout << "Gamepad removed " << &controller;
+    std::cout << "Gamepad removed " << &controller << "\n\r";
 }
 
 } // namespace sf::priv
