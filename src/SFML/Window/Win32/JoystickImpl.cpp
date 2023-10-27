@@ -127,12 +127,12 @@ void JoystickImpl::SetStateFromGamepad(const Gamepad& gamepad)
 
 
 
-    m_state.axes[Joystick::Axis::X] = state.LeftThumbstickX;
-    m_state.axes[Joystick::Axis::Y] = state.LeftThumbstickY;
-    m_state.axes[Joystick::Axis::U] = state.RightThumbstickX;
-    m_state.axes[Joystick::Axis::V] = state.RightThumbstickY;
-    m_state.axes[Joystick::Axis::Z] = state.LeftTrigger;
-    m_state.axes[Joystick::Axis::R] = state.RightTrigger;
+    m_state.axes[Joystick::Axis::X] = static_cast<float>(state.LeftThumbstickX);
+    m_state.axes[Joystick::Axis::Y] = static_cast<float>(state.LeftThumbstickY);
+    m_state.axes[Joystick::Axis::U] = static_cast<float>(state.RightThumbstickX);
+    m_state.axes[Joystick::Axis::V] = static_cast<float>(state.RightThumbstickY);
+    m_state.axes[Joystick::Axis::Z] = static_cast<float>(state.LeftTrigger);
+    m_state.axes[Joystick::Axis::R] = static_cast<float>(state.RightTrigger);
 }
 
 void JoystickImpl::SetStateFromRawController(const RawGameController& controller)
