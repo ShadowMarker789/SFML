@@ -54,8 +54,8 @@ using namespace Windows::Foundation::Collections;
 namespace
 {
 
-RawGameController** rawGameControllers;
-Gamepad**           gamepads;
+const RawGameController** rawGameControllers;
+const Gamepad**           gamepads;
 winrt::hstring**           controllerStrings;
 
 concurrency::critical_section joystickListLock{};
@@ -85,8 +85,8 @@ void JoystickImpl::initialize()
     // lock the collection, avoid race conditions
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    rawGameControllers = new RawGameController*[Joystick::Count];
-    gamepads           = new Gamepad*[Joystick::Count];
+    rawGameControllers = new const RawGameController*[Joystick::Count];
+    gamepads           = new const Gamepad*[Joystick::Count];
     controllerStrings  = new winrt::hstring*[Joystick::Count];
 
     ZeroMemory(rawGameControllers, Joystick::Count * sizeof(RawGameController*));
@@ -233,12 +233,12 @@ void JoystickImpl::RawControllerAdded(const winrt::Windows::Foundation::IInspect
 
     for (int i = 0; i < sf::Joystick::Count; i++)
     {
-        RawGameController* t_con = rawGameControllers[i];
+        auto t_con = rawGameControllers[i];
         if (t_con == nullptr)
         {
             auto identity = controller.NonRoamableId();
 
-            *t_con = controller;
+            rawGameControllers[i] = &controller;
             break;
         }
         else
@@ -256,17 +256,17 @@ void JoystickImpl::RawControllerRemoved(const winrt::Windows::Foundation::IInspe
 
     for (int i = 0; i < sf::Joystick::Count; i++)
     {
-        RawGameController* t_con = rawGameControllers[i];
+        auto t_con = rawGameControllers[i];
         if (t_con == nullptr)
         {
             continue;
         }
 
-        RawGameController& t_con_ref = *t_con;
+        const RawGameController& t_con_ref = *t_con;
 
         if (t_con_ref == controller)
         {
-            *t_con = nullptr;
+            rawGameControllers[i] = nullptr;
         }
     }
 
@@ -282,7 +282,8 @@ void JoystickImpl::GamepadAdded(const winrt::Windows::Foundation::IInspectable, 
         auto* t_con = gamepads[i];
         if (t_con == nullptr)
         {
-            *t_con = controller;
+            gamepads[i] = &controller;
+
             break;
         }
     }
@@ -305,7 +306,7 @@ void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable
 
         if (t_con_ref == controller)
         {
-            *t_con = nullptr;
+            gamepads[i] = nullptr;
         }
     }
 
