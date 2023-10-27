@@ -89,6 +89,10 @@ void JoystickImpl::initialize()
     gamepads           = new Gamepad*[Joystick::Count];
     controllerStrings  = new winrt::hstring*[Joystick::Count];
 
+    ZeroMemory(rawGameControllers, Joystick::Count * sizeof(RawGameController*));
+    ZeroMemory(gamepads, Joystick::Count * sizeof(Gamepad*));
+    ZeroMemory(controllerStrings, Joystick::Count * sizeof(winrt::hstring*));
+
     gamepadAddedToken = Gamepad::GamepadAdded(GamepadAdded);
     gamepadRemovedToken       = Gamepad::GamepadRemoved(GamepadRemoved);
     rawControllerAddedToken   = RawGameController::RawGameControllerAdded(RawControllerAdded);
