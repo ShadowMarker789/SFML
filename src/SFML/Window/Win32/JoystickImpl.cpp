@@ -54,10 +54,6 @@ using namespace Windows::Foundation::Collections;
 namespace
 {
 
-const RawGameController** rawGameControllers;
-const Gamepad**           gamepads;
-winrt::hstring**           controllerStrings;
-
 concurrency::critical_section joystickListLock{};
 event_token                   rawControllerAddedToken;
 event_token                   rawControllerRemovedToken;
@@ -85,14 +81,6 @@ void JoystickImpl::initialize()
     // lock the collection, avoid race conditions
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    rawGameControllers = new const RawGameController*[Joystick::Count];
-    gamepads           = new const Gamepad*[Joystick::Count];
-    controllerStrings  = new winrt::hstring*[Joystick::Count];
-
-    ZeroMemory(rawGameControllers, Joystick::Count * sizeof(RawGameController*));
-    ZeroMemory(gamepads, Joystick::Count * sizeof(Gamepad*));
-    ZeroMemory(controllerStrings, Joystick::Count * sizeof(winrt::hstring*));
-
     gamepadAddedToken = Gamepad::GamepadAdded(GamepadAdded);
     gamepadRemovedToken       = Gamepad::GamepadRemoved(GamepadRemoved);
     rawControllerAddedToken   = RawGameController::RawGameControllerAdded(RawControllerAdded);
@@ -109,7 +97,18 @@ JoystickState JoystickImpl::update()
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    auto gamepad = gamepads[m_index];
+    Gamepad* gamepad = nullptr;
+    RawGameController* rawCon  = nullptr;
+
+
+    auto pads = Gamepad::Gamepads();
+
+    if (pads.Size() > m_index)
+    {
+        gamepad = &(pads.GetAt(m_index));
+    }
+
+    
 
     if (gamepad != nullptr)
     {
@@ -117,7 +116,13 @@ JoystickState JoystickImpl::update()
     }
     else
     {
-        auto rawCon = rawGameControllers[m_index];
+        auto rawCons = RawGameController::RawGameControllers();
+
+        if (rawCons.Size() > m_index)
+        {
+            rawCon = &(rawCons.GetAt(m_index));
+        }
+
         if (rawCon != nullptr)
         {
             SetStateFromRawController(*rawCon);
@@ -164,24 +169,9 @@ bool JoystickImpl::isConnected(unsigned int index)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    auto gamepad = gamepads[index];
+    auto rawCons = RawGameController::RawGameControllers();
 
-    if (gamepad == nullptr)
-    {
-        auto rawCon = rawGameControllers[index];
-
-        if (rawCon == nullptr)
-        {
-            return false;
-        }
-        return true;
-    }
-    else
-    {
-        return true;
-    }
-
-    return false;
+    return (rawCons.Size() > index);
 }
 
 JoystickState JoystickImpl::getState()
@@ -233,92 +223,25 @@ void JoystickImpl::RawControllerAdded(const winrt::Windows::Foundation::IInspect
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    for (int i = 0; i < sf::Joystick::Count; i++)
-    {
-        auto t_con = rawGameControllers[i];
-        if (t_con == nullptr)
-        {
-            auto identity = controller.NonRoamableId();
-
-            rawGameControllers[i] = &controller;
-            break;
-        }
-        else
-        {
-            continue;
-        }
-    }
-
-    std::cout << "Controller added\n\r";
+    std::cout << "Controller added " << &controller << "\n\r";
 }
 
 void JoystickImpl::RawControllerRemoved(const winrt::Windows::Foundation::IInspectable, const RawGameController& controller)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    for (int i = 0; i < sf::Joystick::Count; i++)
-    {
-        auto t_con = rawGameControllers[i];
-        if (t_con == nullptr)
-        {
-            continue;
-        }
-
-        const RawGameController& t_con_ref = *t_con;
-
-        if (t_con_ref == controller)
-        {
-            rawGameControllers[i] = nullptr;
-        }
-    }
-
-    std::cout << "Controller removed\n\r";
+    std::cout << "Controller removed " << &controller << "\n\r";
 }
 
 void JoystickImpl::GamepadAdded(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
 
-    for (int i = 0; i < sf::Joystick::Count; i++)
-    {
-        auto* t_con = gamepads[i];
-        if (t_con == nullptr)
-        {
-            gamepads[i] = &controller;
-
-            break;
-        }
-    }
-
-    auto iunknown = controller.as<IUnknown>().get();
-
-    iunknown->AddRef();
-
     std::cout << "Gamepad added " << &controller << "\n\r";
 }
 void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
     concurrency::critical_section::scoped_lock lock{joystickListLock};
-
-    for (int i = 0; i < sf::Joystick::Count; i++)
-    {
-        auto* t_con = gamepads[i];
-        if (t_con == nullptr)
-        {
-            continue;
-        }
-
-        auto& t_con_ref = *t_con;
-
-        if (t_con_ref == controller)
-        {
-            gamepads[i] = nullptr;
-        }
-    }
-
-    auto iunknown = controller.as<IUnknown>().get();
-
-    iunknown->Release();
 
     std::cout << "Gamepad removed " << &controller << "\n\r";
 }
