@@ -145,7 +145,9 @@ void JoystickImpl::SetStateFromRawController(const RawGameController& controller
     std::vector<GameControllerSwitchPosition> switchPoss(switchCount);
     auto switches = winrt::array_view<GameControllerSwitchPosition>(switchPoss.data(), &switchPoss[switchCount - 1]);
 
-    auto state = controller.GetCurrentReading(buttons, switches, axes);
+    controller.GetCurrentReading(buttons, switches, axes);
+
+    
 
     m_state = JoystickState();
 }
@@ -232,6 +234,8 @@ void JoystickImpl::RawControllerAdded(const winrt::Windows::Foundation::IInspect
         {
             auto identity = controller.NonRoamableId();
 
+            *t_con = controller;
+            break;
         }
         else
         {
@@ -267,10 +271,40 @@ void JoystickImpl::RawControllerRemoved(const winrt::Windows::Foundation::IInspe
 
 void JoystickImpl::GamepadAdded(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
+    concurrency::critical_section::scoped_lock lock{joystickListLock};
+
+    for (int i = 0; i < sf::Joystick::Count; i++)
+    {
+        auto* t_con = gamepads[i];
+        if (t_con == nullptr)
+        {
+            *t_con = controller;
+            break;
+        }
+    }
+
     std::cout << "Gamepad added " << &controller << "\n\r";
 }
 void JoystickImpl::GamepadRemoved(const winrt::Windows::Foundation::IInspectable, const Gamepad& controller)
 {
+    concurrency::critical_section::scoped_lock lock{joystickListLock};
+
+    for (int i = 0; i < sf::Joystick::Count; i++)
+    {
+        auto* t_con = gamepads[i];
+        if (t_con == nullptr)
+        {
+            continue;
+        }
+
+        auto& t_con_ref = *t_con;
+
+        if (t_con_ref == controller)
+        {
+            *t_con = nullptr;
+        }
+    }
+
     std::cout << "Gamepad removed " << &controller << "\n\r";
 }
 
