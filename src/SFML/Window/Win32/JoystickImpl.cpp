@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <array>
 #include <iomanip>
+#include <optional>
 #include <ostream>
 #include <regstr.h>
 #include <sstream>
@@ -53,12 +54,18 @@
 
 #include <combaseapi.h>
 
+// Fix for MinGW not defining this macro
+#ifndef HID_USAGE_GENERIC_MULTI_AXIS_CONTROLLER
+#define HID_USAGE_GENERIC_MULTI_AXIS_CONTROLLER 0x8
+#endif
+
 namespace
 {
 std::vector<sf::priv::JoystickImpl> joysticks;
 ATOM                                joystickAtom{};
 HWND                                joystickHwnd{};
 UINT_PTR                            timerHandle{};
+
 // Raw Input Chunks
 constexpr auto             rawInputChunkSize = 512;
 std::vector<std::byte>     preparsedDataChunk;
@@ -70,7 +77,7 @@ std::vector<std::byte>     deviceHumanNameDataChunk;
 
 namespace
 {
-sf::Joystick::Axis getAxis(int index)
+[[nodiscard]] sf::Joystick::Axis getAxis(std::size_t index)
 {
     switch (index)
     {
@@ -91,28 +98,34 @@ sf::Joystick::Axis getAxis(int index)
         case 7:
             return sf::Joystick::Axis::PovY;
         default:
-            throw std::out_of_range{"index is out of range."};
+            throw std::out_of_range("index is out of range.");
     }
 }
 
-bool extractVidPid(const std::wstring& devicePath, USHORT& vid, USHORT& pid, bool& isXInput)
+struct VidPid
+{
+    USHORT vid{};
+    USHORT pid{};
+};
+
+[[nodiscard]] std::optional<VidPid> extractVidPid(const std::wstring& devicePath, bool& isXInput)
 {
     // Find VID
     std::size_t vidPos = devicePath.find(L"VID_");
     if (vidPos == std::wstring::npos)
-        return false;
+        return std::nullopt;
     vidPos += 4;
     if (vidPos + 4 > devicePath.length())
-        return false;
+        return std::nullopt;
     const std::wstring vidStr = devicePath.substr(vidPos, 4);
 
     // Find PID
     std::size_t pidPos = devicePath.find(L"PID_");
     if (pidPos == std::wstring::npos)
-        return false;
+        return std::nullopt;
     pidPos += 4;
     if (pidPos + 4 > devicePath.length())
-        return false;
+        return std::nullopt;
     const std::wstring pidStr = devicePath.substr(pidPos, 4);
 
     // Check for XInput (IG_)
@@ -124,29 +137,24 @@ bool extractVidPid(const std::wstring& devicePath, USHORT& vid, USHORT& pid, boo
     // Convert hex strings to USHORT without exceptions
     WCHAR* endptr               = nullptr;
     errno                       = 0; // Reset errno
-    const unsigned long vidLong = wcstoul(vidStr.c_str(), &endptr, 16);
+    const unsigned long vidLong = std::wcstoul(vidStr.c_str(), &endptr, 16);
     if (errno != 0 || *endptr != L'\0' || vidLong > 0xFFFF)
     {
-        const sf::String vidStrSfml{vidStr};
-        sf::err() << "Failed to parse VID: " << vidStrSfml.toUtf8().data() << std::endl;
-        return false;
+        sf::err() << "Failed to parse VID: " << sf::String(vidStr).toUtf8().data() << std::endl;
+        return std::nullopt;
     }
 
     errno                       = 0;
-    const unsigned long pidLong = wcstoul(pidStr.c_str(), &endptr, 16);
+    const unsigned long pidLong = std::wcstoul(pidStr.c_str(), &endptr, 16);
     if (errno != 0 || *endptr != L'\0' || pidLong > 0xFFFF)
     {
         const sf::String pidStrSfml{pidStr};
         sf::err() << "Failed to parse PID: " << pidStrSfml.toUtf8().data() << std::endl;
-        return false;
+        return std::nullopt;
     }
 
-    vid = static_cast<USHORT>(vidLong);
-    pid = static_cast<USHORT>(pidLong);
-    return true;
+    return VidPid{static_cast<USHORT>(vidLong), static_cast<USHORT>(pidLong)};
 }
-
-
 } // namespace
 
 namespace sf::priv
@@ -160,7 +168,7 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
     joystickImpl.m_state.connected  = true;
 
     UINT nameSize{};
-    // okay this looks weird, but the docs say to call it twice like this
+    // This looks weird, but the docs say to call it twice like this
     GetRawInputDeviceInfoW(deviceHandle, RIDI_DEVICENAME, nullptr, &nameSize);
     GetRawInputDeviceInfoW(deviceHandle, RIDI_DEVICENAME, deviceNameDataChunk.data(), &nameSize);
     std::wstring devicePath(reinterpret_cast<LPCWSTR>(deviceNameDataChunk.data()));
@@ -169,19 +177,17 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
                                    nullptr,
                                    OPEN_EXISTING,
-                                   0x0,
+                                   0,
                                    nullptr);
     if (HidD_GetProductString(fileHandle, deviceHumanNameDataChunk.data(), rawInputChunkSize))
     {
-        joystickImpl.m_identification.name = String{reinterpret_cast<wchar_t*>(deviceHumanNameDataChunk.data())};
-        USHORT vid{};
-        USHORT pid{};
-        bool   isXInput = false;
-        if (extractVidPid(devicePath, vid, pid, isXInput))
+        joystickImpl.m_identification.name = String(reinterpret_cast<wchar_t*>(deviceHumanNameDataChunk.data()));
+        bool isXInput                      = false;
+        if (const auto result = extractVidPid(devicePath, isXInput))
         {
-            joystickImpl.m_identification.vendorId  = vid;
-            joystickImpl.m_identification.productId = pid;
-            joystickImpl.m_useXInput                = true;
+            joystickImpl.m_identification.vendorId  = result->vid;
+            joystickImpl.m_identification.productId = result->pid;
+            joystickImpl.m_useXInput                = true; // TODO Why is isXInput ignored?
         }
     }
 
@@ -193,7 +199,7 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
         joystickImpl.m_caps.buttonCount = 14;
         constexpr auto axes             = 6;
         for (unsigned int i = 0; i < axes; ++i)
-            joystickImpl.m_caps.axes[getAxis(static_cast<int>(i))] = true;
+            joystickImpl.m_caps.axes[getAxis(i)] = true;
     }
     else
     {
@@ -202,36 +208,30 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
         if (const auto result = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, nullptr, &buffSize);
             FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
-                  << std::endl;
+            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
+                  << "]" << std::endl;
             return;
         }
         if (const auto result = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, preparsedDataChunk.data(), &buffSize);
             FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
-                  << std::endl;
+            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
+                  << "]" << std::endl;
             return;
         }
         auto*     preparsedData = reinterpret_cast<PHIDP_PREPARSED_DATA>(preparsedDataChunk.data());
         HIDP_CAPS hCaps{};
         if (const auto result = HidP_GetCaps(preparsedData, &hCaps); FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "HidP_GetCaps returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
+            err() << "HidP_GetCaps returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
                   << std::endl;
             return;
         }
 
         joystickImpl.m_caps.buttonCount = hCaps.NumberInputButtonCaps;
-        auto axes                       = hCaps.NumberInputValueCaps;
+        const auto axes                 = hCaps.NumberInputValueCaps;
         for (std::size_t i = 0; i < Joystick::AxisCount && i < axes; ++i)
-            joystickImpl.m_caps.axes[getAxis(static_cast<int>(i))] = true;
+            joystickImpl.m_caps.axes[getAxis(i)] = true;
     }
 
     unsigned int xInputIndex = 0;
@@ -281,13 +281,12 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
     RAWINPUT  rawInput{};
     HIDP_CAPS hCaps{};
 
-    // It's nice being able to allocate an entire RAWINPUT on the stack, apparently RawInput has been around so long that folk used to malloc for it.
+    // It's nice being able to allocate an entire RAWINPUT on the stack, apparently RawInput has been around so long
+    // that folk used to malloc for it.
     if (const auto uiResult = GetRawInputData(inputDevice, RID_INPUT, &rawInput, &bufferSize, sizeof(RAWINPUTHEADER));
         uiResult == UINT_MAX || uiResult != bufferSize)
     {
-        // that didn't work!
-        auto lastError = GetLastError();
-        err() << "GetRawInputData returned [" << uiResult << "] unexpectedly! GetLastError: [" << lastError << "]"
+        err() << "GetRawInputData returned [" << uiResult << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
               << std::endl;
         return;
     }
@@ -309,10 +308,9 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
                 break;
             }
         }
+
         if (jstl == nullptr)
-        {
             return;
-        }
 
         JoystickImpl& targetJoystick = *jstl;
 
@@ -325,20 +323,16 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
         if (const auto uiResult = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, nullptr, &bufferSize);
             uiResult == UINT_MAX)
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "GetRawInputDeviceInfoW returned [" << uiResult << "] unexpectedly! GetLastError: [" << lastError
-                  << "]" << std::endl;
+            err() << "GetRawInputDeviceInfoW returned [" << uiResult << "] unexpectedly! GetLastError: ["
+                  << GetLastError() << "]" << std::endl;
             return;
         }
 
         if (const auto uiResult = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, preparsedDataChunk.data(), &bufferSize);
             uiResult == UINT_MAX)
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "GetRawInputDeviceInfoW returned [" << uiResult << "] unexpectedly! GetLastError: [" << lastError
-                  << "]" << std::endl;
+            err() << "GetRawInputDeviceInfoW returned [" << uiResult << "] unexpectedly! GetLastError: ["
+                  << GetLastError() << "]" << std::endl;
             return;
         }
 
@@ -346,10 +340,8 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
 
         if (const auto result = HidP_GetCaps(preparsedData, &hCaps); FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "GetRawInputDeviceInfoW returned [" << result << "] unexpectedly! GetLastError: [" << lastError
-                  << "]" << std::endl;
+            err() << "GetRawInputDeviceInfoW returned [" << result << "] unexpectedly! GetLastError: ["
+                  << GetLastError() << "]" << std::endl;
             return;
         }
 
@@ -357,10 +349,8 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
         HIDP_BUTTON_CAPS hButtonCaps{};
         if (const auto result = HidP_GetButtonCaps(HidP_Input, &hButtonCaps, &capsLength, preparsedData); FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "HidP_GetButtonCaps returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
-                  << std::endl;
+            err() << "HidP_GetButtonCaps returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
+                  << "]" << std::endl;
             return;
         }
 
@@ -376,21 +366,16 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
                                                rawInput.data.hid.dwSizeHid);
             FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "HidP_GetUsages returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
+            err() << "HidP_GetUsages returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
                   << std::endl;
             return;
         }
 
         if (buttonCount == 0)
         {
-            // INFO: No buttons are down.
-
+            // No buttons are down.
             for (std::size_t buttonIndex = 0; buttonIndex < Joystick::ButtonCount; ++buttonIndex)
-            {
                 targetJoystick.m_state.buttons[buttonIndex] = false;
-            }
         }
         else
         {
@@ -421,14 +406,12 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
         if (const auto result = HidP_GetValueCaps(HidP_Input, pValueCaps, &hCaps.NumberInputValueCaps, preparsedData);
             FAILED(result))
         {
-            // that didn't work!
-            auto lastError = GetLastError();
-            err() << "HidP_GetValueCaps returned [" << result << "] unexpectedly! GetLastError: [" << lastError << "]"
-                  << std::endl;
+            err() << "HidP_GetValueCaps returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
+                  << "]" << std::endl;
             return;
         }
 
-        for (int i = 0; i < hCaps.NumberInputValueCaps; ++i)
+        for (std::size_t i = 0; i < hCaps.NumberInputValueCaps; ++i)
         {
             ULONG rawValue{};
             if (const auto result = HidP_GetUsageValue(HidP_Input,
@@ -441,10 +424,8 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
                                                        rawInput.data.hid.dwSizeHid);
                 FAILED(result))
             {
-                // that didn't work!
-                auto lastError = GetLastError();
-                err() << "HidP_GetUsageValue returned [" << result << "] unexpectedly! GetLastError: [" << lastError
-                      << "]" << std::endl;
+                err() << "HidP_GetUsageValue returned [" << result << "] unexpectedly! GetLastError: ["
+                      << GetLastError() << "]" << std::endl;
                 return;
             }
 
@@ -453,7 +434,7 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
             // funky-wunky bitSize
             const ULONG expectedMax = (1UL << bitSize) - 1UL;
 
-            // looks weird, but the BitSize tells us how many bits they're actually using and which ones to ignore
+            // Looks weird, but the BitSize tells us how many bits they're actually using and which ones to ignore.
             // Also turns out the logical-max and logical-min don't... really have a signedness to them? They're weird!
             const ULONG logicalMax = expectedMax & static_cast<ULONG>(pValueCaps[i].LogicalMax);
             const ULONG logicalMin = expectedMax & static_cast<ULONG>(pValueCaps[i].LogicalMin);
@@ -461,14 +442,13 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
             const auto min = static_cast<float>(logicalMin);
             const auto max = static_cast<float>(logicalMax);
 
-            float outputValue = 0.0f;
-
             // TODO: Remove this comment when you've finished testing the RawInput axes of non-xinput controllers.
             // err() << "[" << i << "] BitSize: [" << pValueCaps[i].BitSize << "] Min: [" << min << "] Max: [" << max << "] Value: [" << rawValue << "]" << std::endl;
 
             // Map value from [min, max] to [-100, 100]
             // Avoid division by zero
-            if (max != min)
+            float outputValue = 0.0f;
+            if (min != max)
                 outputValue = -100.0f + (static_cast<float>(rawValue) - min) * 200.0f / (max - min);
 
             targetJoystick.m_state.axes[getAxis(i)] = outputValue;
@@ -485,7 +465,7 @@ void JoystickImpl::dispatchXInput()
     {
         XINPUT_STATE xinputState{};
         auto         xinputResult = XInputGetState(xinputIndex, &xinputState);
-        if (xinputResult != 0x0)
+        if (xinputResult != 0)
         {
             // Probably not connected, just move on.
             continue;
@@ -518,7 +498,7 @@ void JoystickImpl::dispatchXInput()
 
                     const SHORT deadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE / 4;
 
-                    // XInput thumbsticks range from -32767 to 32767 - to scale them to -100.0f .. 100.0f divide by the below factor.
+                    // XInput thumbsticks range from -32767 to 32767 - to scale them to -100.0f .. 100.0f divide by the below factor
                     constexpr auto thumbstickScaleFactor = 327.670f;
 
                     state.axes[Joystick::Axis::X] = (std::abs(gamepad.sThumbLX) < deadzone)
@@ -534,7 +514,7 @@ void JoystickImpl::dispatchXInput()
                                                         ? 0.0f
                                                         : gamepad.sThumbRY / thumbstickScaleFactor;
 
-                    // XInput triggers range between 0 and 255 - to scale them to 0.0f .. 100.0f divide by the below factor.
+                    // XInput triggers range between 0 and 255 - to scale them to 0.0f .. 100.0f divide by the below factor
                     constexpr auto triggerScaleFactor = 2.55f;
                     state.axes[Joystick::Axis::U]     = gamepad.bLeftTrigger / triggerScaleFactor;
                     state.axes[Joystick::Axis::V]     = gamepad.bRightTrigger / triggerScaleFactor;
@@ -558,11 +538,10 @@ DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
     // Required
     if (const auto coInitResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); FAILED(coInitResult))
     {
-        // :(
-        auto errorCode = GetLastError();
-        err() << "CoInitializeEx returned 0, GetLastError: [" << errorCode << "], Win32 Joystick will not function."
+        const auto lastError = GetLastError();
+        err() << "CoInitializeEx returned 0, GetLastError: [" << lastError << "], Win32 Joystick will not function."
               << std::endl;
-        return errorCode;
+        return lastError;
     }
 
     WNDCLASSEXW wndClass{};
@@ -572,13 +551,12 @@ DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
     wndClass.lpszClassName = L"SFML-Win32JoystickWndProc";
 
     joystickAtom = RegisterClassExW(&wndClass);
-    if (joystickAtom == 0x0)
+    if (joystickAtom == 0)
     {
-        // :(
-        auto errorCode = GetLastError();
-        err() << "RegisterClassExW returned 0, GetLastError: [" << errorCode << "], Win32 Joystick will not function."
+        const auto lastError = GetLastError();
+        err() << "RegisterClassExW returned 0, GetLastError: [" << lastError << "], Win32 Joystick will not function."
               << std::endl;
-        return errorCode;
+        return lastError;
     }
 
     joystickHwnd = CreateWindowExW(0,
@@ -597,10 +575,10 @@ DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
                                    nullptr);
     if (joystickHwnd == nullptr)
     {
-        // :(
-        auto errorCode = GetLastError();
-        err() << "CreateWindowExW returned 0, GetLastError: [" << errorCode << "] Win32 Joystick will not function.";
-        return errorCode;
+        const auto lastError = GetLastError();
+        err() << "CreateWindowExW returned 0, GetLastError: [" << lastError << "] Win32 Joystick will not function."
+              << std::endl;
+        return lastError;
     }
 
     // stack-allocation
@@ -620,21 +598,18 @@ DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
     rids[1].usUsage = HID_USAGE_GENERIC_JOYSTICK;
     rids[2].usUsage = HID_USAGE_GENERIC_MULTI_AXIS_CONTROLLER;
 
-    auto rawInputRetCode = RegisterRawInputDevices(rids.data(), static_cast<UINT>(rids.size()), sizeof(RAWINPUTDEVICE));
-    if (rawInputRetCode == 0x0)
+    if (RegisterRawInputDevices(rids.data(), static_cast<UINT>(rids.size()), sizeof(RAWINPUTDEVICE)) == 0)
     {
-        // :(
-        auto errorCode = GetLastError();
-        err() << "RegisterRawInputDevices returned 0, GetLastError: [" << errorCode
-              << "] Win32 Joystick will not function.";
-        return errorCode;
+        const auto lastError = GetLastError();
+        err() << "RegisterRawInputDevices returned 0, GetLastError: [" << lastError
+              << "] Win32 Joystick will not function." << std::endl;
+        return lastError;
     }
 
     timerHandle = SetTimer(joystickHwnd, 0, 8, nullptr);
 
     MSG msg;
-
-    while (GetMessageW(&msg, joystickHwnd, 0, 0) != 0x0)
+    while (GetMessageW(&msg, joystickHwnd, 0, 0) != 0)
     {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
@@ -666,10 +641,12 @@ void JoystickImpl::initialize()
         joystick.m_index           = static_cast<std::uint32_t>(i);
         joysticks.push_back(joystick);
     }
+
     DWORD       threadId     = 0;
     const auto* threadHandle = CreateThread(nullptr, 0, win32JoystickDispatchThread, nullptr, 0, &threadId);
     if (threadHandle == nullptr)
-        err() << "CreateThread returned 0, GetLastError: [" << GetLastError() << "] Win32 Joystick will not function.";
+        err() << "CreateThread returned 0, GetLastError: [" << GetLastError() << "] Win32 Joystick will not function."
+              << std::endl;
 }
 
 ////////////////////////////////////////////////////////////
