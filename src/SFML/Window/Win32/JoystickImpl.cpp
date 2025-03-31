@@ -121,7 +121,7 @@ const DWORD directInputEventBufferSize = 32;
 // for XInput
 namespace
 {
-constexpr std::size_t XINPUT_MAX_DEVICES{4};
+constexpr std::size_t xinputMaxDevices{4};
 std::vector<bool>     xInputSlots{};
 bool                  directInputNeedsInvalidation{};
 
@@ -151,25 +151,35 @@ bool                  directInputNeedsInvalidation{};
 }
 
 // See also https://learn.microsoft.com/en-us/windows/win32/xinput/xinput-and-directinput?redirectedfrom=MSDN
-[[nodiscard]] BOOL IsXInputDevice(const GUID* pGuidProductFromDirectInput)
+[[nodiscard]] BOOL isXInputDevice(const GUID* pGuidProductFromDirectInput)
 {
-    IWbemLocator*         pIWbemLocator   = nullptr;
-    IEnumWbemClassObject* pEnumDevices    = nullptr;
-    IWbemClassObject*     pDevices[20]    = {};
-    IWbemServices*        pIWbemServices  = nullptr;
-    BSTR                  bstrNamespace   = nullptr;
-    BSTR                  bstrDeviceID    = nullptr;
-    BSTR                  bstrClassName   = nullptr;
-    bool                  bIsXinputDevice = false;
-
-    CoInitialize(nullptr);
+    IWbemLocator*                     pIWbemLocator   = nullptr;
+    IEnumWbemClassObject*             pEnumDevices    = nullptr;
+    std::array<IWbemClassObject*, 20> pDevices        = {};
+    IWbemServices*                    pIWbemServices  = nullptr;
+    BSTR                              bstrNamespace   = nullptr;
+    BSTR                              bstrDeviceID    = nullptr;
+    BSTR                              bstrClassName   = nullptr;
+    bool                              bisXInputDevice = false;
+    HRESULT                           hr;
 
     // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
     VARIANT var = {};
+
+    HRESULT comInit = CoInitialize(nullptr);
+    if (FAILED(comInit))
+    {
+        goto LCleanup;
+    }
+
     VariantInit(&var);
 
     // Create WMI
-    auto hr = CoCreateInstance(__uuidof(WbemLocator), nullptr, CLSCTX_INPROC_SERVER, __uuidof(IWbemLocator), (LPVOID*)&pIWbemLocator);
+    hr = CoCreateInstance(__uuidof(WbemLocator),
+                          nullptr,
+                          CLSCTX_INPROC_SERVER,
+                          __uuidof(IWbemLocator),
+                          reinterpret_cast<LPVOID*>(&pIWbemLocator));
     if (FAILED(hr) || pIWbemLocator == nullptr)
         goto LCleanup;
 
@@ -184,7 +194,7 @@ bool                  directInputNeedsInvalidation{};
         goto LCleanup;
 
     // Connect to WMI
-    hr = pIWbemLocator->ConnectServer(bstrNamespace, nullptr, nullptr, 0L, 0L, nullptr, nullptr, &pIWbemServices);
+    hr = pIWbemLocator->ConnectServer(bstrNamespace, nullptr, nullptr, nullptr, NULL, nullptr, nullptr, &pIWbemServices);
     if (FAILED(hr) || pIWbemServices == nullptr)
         goto LCleanup;
 
@@ -208,7 +218,7 @@ bool                  directInputNeedsInvalidation{};
     for (;;)
     {
         ULONG uReturned = 0;
-        hr              = pEnumDevices->Next(10000, _countof(pDevices), pDevices, &uReturned);
+        hr              = pEnumDevices->Next(10000, static_cast<ULONG>(pDevices.size()), pDevices.data(), &uReturned);
         if (FAILED(hr))
             goto LCleanup;
         if (uReturned == 0)
@@ -225,7 +235,8 @@ bool                  directInputNeedsInvalidation{};
                 if (wcsstr(var.bstrVal, L"IG_"))
                 {
                     // If it does, then get the VID/PID from var.bstrVal
-                    DWORD  dwPid = 0, dwVid = 0;
+                    DWORD  dwPid  = 0;
+                    DWORD  dwVid  = 0;
                     WCHAR* strVid = wcsstr(var.bstrVal, L"VID_");
                     if (strVid && swscanf_s(strVid, L"VID_%4X", &dwVid) != 1)
                         dwVid = 0;
@@ -237,7 +248,7 @@ bool                  directInputNeedsInvalidation{};
                     DWORD dwVidPid = MAKELONG(dwVid, dwPid);
                     if (dwVidPid == pGuidProductFromDirectInput->Data1)
                     {
-                        bIsXinputDevice = true;
+                        bisXInputDevice = true;
                         goto LCleanup;
                     }
                 }
@@ -257,14 +268,14 @@ LCleanup:
     if (bstrClassName)
         SysFreeString(bstrClassName);
 
-    for (size_t iDevice = 0; iDevice < _countof(pDevices); ++iDevice)
+    for (size_t iDevice = 0; iDevice < pDevices.size(); ++iDevice)
         SAFE_RELEASE(pDevices[iDevice]);
 
     SAFE_RELEASE(pEnumDevices);
     SAFE_RELEASE(pIWbemLocator);
     SAFE_RELEASE(pIWbemServices);
 
-    return bIsXinputDevice;
+    return bisXInputDevice;
 }
 } // namespace
 
@@ -373,7 +384,7 @@ namespace sf::priv
 ////////////////////////////////////////////////////////////
 void JoystickImpl::initialize()
 {
-    xInputSlots.resize(XINPUT_MAX_DEVICES);
+    xInputSlots.resize(xinputMaxDevices);
 
     // Try to initialize DirectInput
     initializeDInput();
@@ -1077,30 +1088,30 @@ JoystickState JoystickImpl::updateXInput()
     // No identified index yet
     if (m_xInputIndex == 0xFFFFFFFF)
     {
-        for (auto i = 0; i < xInputSlots.size(); i++)
+        for (size_t i = 0; i < xInputSlots.size(); i++)
         {
-            bool taken = xInputSlots[i];
-            if (taken)
+            const bool taken = xInputSlots[i];
+            if (!taken)
             {
-                continue;
+                xInputSlots[i] = true;
+                m_xInputIndex  = static_cast<DWORD>(i);
+                break;
             }
             else
             {
-                xInputSlots[i] = true;
-                m_xInputIndex  = i;
-                break;
+                continue;
             }
         }
     }
 
-    XINPUT_STATE xinputState = {0};
+    XINPUT_STATE xinputState = {};
     auto         result      = XInputGetState(m_xInputIndex, &xinputState);
 
     if (result != S_OK)
     {
         // probably device not connected.
         xInputSlots[m_xInputIndex] = false;
-        m_state                    = {0};
+        m_state                    = {};
         m_xInputIndex              = 0xFFFFFFFF;
         return m_state;
     }
@@ -1343,7 +1354,7 @@ BOOL CALLBACK JoystickImpl::deviceEnumerationCallback(const DIDEVICEINSTANCE* de
     {
         if (record.guid == deviceInstance->guidInstance)
         {
-            if (IsXInputDevice(&deviceInstance->guidProduct))
+            if (isXInputDevice(&deviceInstance->guidProduct))
             {
                 record.xInputDevice = true;
             }
@@ -1355,7 +1366,7 @@ BOOL CALLBACK JoystickImpl::deviceEnumerationCallback(const DIDEVICEINSTANCE* de
     }
 
     JoystickRecord record = {deviceInstance->guidInstance, sf::Joystick::Count, true};
-    if (IsXInputDevice(&deviceInstance->guidProduct))
+    if (isXInputDevice(&deviceInstance->guidProduct))
     {
         record.xInputDevice = true;
     }
