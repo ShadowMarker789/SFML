@@ -150,18 +150,43 @@ bool                  directInputNeedsInvalidation{};
     }
 }
 
+struct xinputCleanupData
+{
+    VARIANT                           var            = {};
+    IWbemLocator*                     pIWbemLocator  = nullptr;
+    IEnumWbemClassObject*             pEnumDevices   = nullptr;
+    std::array<IWbemClassObject*, 20> pDevices       = {};
+    IWbemServices*                    pIWbemServices = nullptr;
+    BSTR                              bstrNamespace  = nullptr;
+    BSTR                              bstrDeviceID   = nullptr;
+    BSTR                              bstrClassName  = nullptr;
+};
+
+void safeCleanup(xinputCleanupData& data)
+{
+    VariantClear(&data.var);
+
+    if (data.bstrNamespace)
+        SysFreeString(data.bstrNamespace);
+    if (data.bstrDeviceID)
+        SysFreeString(data.bstrDeviceID);
+    if (data.bstrClassName)
+        SysFreeString(data.bstrClassName);
+
+    for (size_t iDevice = 0; iDevice < data.pDevices.size(); ++iDevice)
+        SAFE_RELEASE(data.pDevices[iDevice]);
+
+    SAFE_RELEASE(data.pEnumDevices);
+    SAFE_RELEASE(data.pIWbemLocator);
+    SAFE_RELEASE(data.pIWbemServices);
+}
+
 // See also https://learn.microsoft.com/en-us/windows/win32/xinput/xinput-and-directinput?redirectedfrom=MSDN
 [[nodiscard]] BOOL isXInputDevice(const GUID* pGuidProductFromDirectInput)
 {
-    IWbemLocator*                     pIWbemLocator   = nullptr;
-    IEnumWbemClassObject*             pEnumDevices    = nullptr;
-    std::array<IWbemClassObject*, 20> pDevices        = {};
-    IWbemServices*                    pIWbemServices  = nullptr;
-    BSTR                              bstrNamespace   = nullptr;
-    BSTR                              bstrDeviceID    = nullptr;
-    BSTR                              bstrClassName   = nullptr;
-    bool                              bisXInputDevice = false;
-    HRESULT                           hr;
+    xinputCleanupData data;
+    bool              bisXInputDevice = false;
+    HRESULT           hr;
 
     // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
     VARIANT var = {};
@@ -169,7 +194,8 @@ bool                  directInputNeedsInvalidation{};
     HRESULT comInit = CoInitialize(nullptr);
     if (FAILED(comInit))
     {
-        goto LCleanup;
+        safeCleanup(data);
+        return false;
     }
 
     VariantInit(&var);
@@ -179,27 +205,43 @@ bool                  directInputNeedsInvalidation{};
                           nullptr,
                           CLSCTX_INPROC_SERVER,
                           __uuidof(IWbemLocator),
-                          reinterpret_cast<LPVOID*>(&pIWbemLocator));
-    if (FAILED(hr) || pIWbemLocator == nullptr)
-        goto LCleanup;
+                          reinterpret_cast<LPVOID*>(&data.pIWbemLocator));
+    if (FAILED(hr) || data.pIWbemLocator == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
 
-    bstrNamespace = SysAllocString(L"\\\\.\\root\\cimv2");
-    if (bstrNamespace == nullptr)
-        goto LCleanup;
-    bstrClassName = SysAllocString(L"Win32_PNPEntity");
-    if (bstrClassName == nullptr)
-        goto LCleanup;
-    bstrDeviceID = SysAllocString(L"DeviceID");
-    if (bstrDeviceID == nullptr)
-        goto LCleanup;
+    data.bstrNamespace = SysAllocString(L"\\\\.\\root\\cimv2");
+    if (data.bstrNamespace == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
+    data.bstrClassName = SysAllocString(L"Win32_PNPEntity");
+    if (data.bstrClassName == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
+    data.bstrDeviceID = SysAllocString(L"DeviceID");
+    if (data.bstrDeviceID == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
 
     // Connect to WMI
-    hr = pIWbemLocator->ConnectServer(bstrNamespace, nullptr, nullptr, nullptr, NULL, nullptr, nullptr, &pIWbemServices);
-    if (FAILED(hr) || pIWbemServices == nullptr)
-        goto LCleanup;
+    hr = data.pIWbemLocator
+             ->ConnectServer(data.bstrNamespace, nullptr, nullptr, nullptr, NULL, nullptr, nullptr, &data.pIWbemServices);
+    if (FAILED(hr) || data.pIWbemServices == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
 
     // Switch security level to IMPERSONATE.
-    hr = CoSetProxyBlanket(pIWbemServices,
+    hr = CoSetProxyBlanket(data.pIWbemServices,
                            RPC_C_AUTHN_WINNT,
                            RPC_C_AUTHZ_NONE,
                            nullptr,
@@ -208,26 +250,36 @@ bool                  directInputNeedsInvalidation{};
                            nullptr,
                            EOAC_NONE);
     if (FAILED(hr))
-        goto LCleanup;
+    {
+        safeCleanup(data);
+        return false;
+    }
 
-    hr = pIWbemServices->CreateInstanceEnum(bstrClassName, 0, nullptr, &pEnumDevices);
-    if (FAILED(hr) || pEnumDevices == nullptr)
-        goto LCleanup;
+    hr = data.pIWbemServices->CreateInstanceEnum(data.bstrClassName, 0, nullptr, &data.pEnumDevices);
+    if (FAILED(hr) || data.pEnumDevices == nullptr)
+    {
+        safeCleanup(data);
+        return false;
+    }
+
 
     // Loop over all devices
     for (;;)
     {
         ULONG uReturned = 0;
-        hr              = pEnumDevices->Next(10000, static_cast<ULONG>(pDevices.size()), pDevices.data(), &uReturned);
+        hr = data.pEnumDevices->Next(10000, static_cast<ULONG>(data.pDevices.size()), data.pDevices.data(), &uReturned);
         if (FAILED(hr))
-            goto LCleanup;
+        {
+            safeCleanup(data);
+            return false;
+        }
         if (uReturned == 0)
             break;
 
         for (size_t iDevice = 0; iDevice < uReturned; ++iDevice)
         {
             // For each device, get its device ID
-            hr = pDevices[iDevice]->Get(bstrDeviceID, 0L, &var, nullptr, nullptr);
+            hr = data.pDevices[iDevice]->Get(data.bstrDeviceID, 0L, &var, nullptr, nullptr);
             if (SUCCEEDED(hr) && var.vt == VT_BSTR && var.bstrVal != nullptr)
             {
                 // Check if the device ID contains "IG_".  If it does, then it's an XInput device
@@ -249,32 +301,17 @@ bool                  directInputNeedsInvalidation{};
                     if (dwVidPid == pGuidProductFromDirectInput->Data1)
                     {
                         bisXInputDevice = true;
-                        goto LCleanup;
+                        safeCleanup(data);
+                        return bisXInputDevice;
                     }
                 }
             }
             VariantClear(&var);
-            SAFE_RELEASE(pDevices[iDevice]);
+            SAFE_RELEASE(data.pDevices[iDevice]);
         }
     }
 
-LCleanup:
-    VariantClear(&var);
-
-    if (bstrNamespace)
-        SysFreeString(bstrNamespace);
-    if (bstrDeviceID)
-        SysFreeString(bstrDeviceID);
-    if (bstrClassName)
-        SysFreeString(bstrClassName);
-
-    for (size_t iDevice = 0; iDevice < pDevices.size(); ++iDevice)
-        SAFE_RELEASE(pDevices[iDevice]);
-
-    SAFE_RELEASE(pEnumDevices);
-    SAFE_RELEASE(pIWbemLocator);
-    SAFE_RELEASE(pIWbemServices);
-
+    safeCleanup(data);
     return bisXInputDevice;
 }
 } // namespace
