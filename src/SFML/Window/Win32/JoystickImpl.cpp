@@ -49,7 +49,12 @@
 
 // Joystick-specific includes
 #include <Xinput.h>
-#include <hidsdi.h>
+
+extern "C"
+{
+    #include <hidsdi.h>
+}
+
 #include <hidusage.h>
 
 #include <combaseapi.h>
