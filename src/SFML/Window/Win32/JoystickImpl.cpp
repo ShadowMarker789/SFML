@@ -46,9 +46,9 @@
 #include <cmath>
 
 // Used for XInput matching
+#include <Xinput.h>
 #include <oleauto.h>
 #include <wbemidl.h>
-#include <Xinput.h>
 
 #ifndef SAFE_RELEASE
 #define SAFE_RELEASE(p)     \
@@ -118,7 +118,7 @@ JoystickBlacklist joystickBlacklist;
 const DWORD directInputEventBufferSize = 32;
 } // namespace
 
-// for XInput 
+// for XInput
 namespace
 {
 constexpr std::size_t XINPUT_MAX_DEVICES{4};
@@ -164,7 +164,7 @@ bool                  directInputNeedsInvalidation{};
 
     CoInitialize(nullptr);
 
-     // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
+    // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
     VARIANT var = {};
     VariantInit(&var);
 
@@ -266,7 +266,7 @@ LCleanup:
 
     return bIsXinputDevice;
 }
-}
+} // namespace
 
 
 ////////////////////////////////////////////////////////////
@@ -490,7 +490,7 @@ JoystickCaps JoystickImpl::getCapabilities() const
         // XInput has 14 Buttons and 6 Axes
         JoystickCaps caps{0};
         caps.buttonCount    = 14;
-        constexpr auto axes             = 6;
+        constexpr auto axes = 6;
         for (unsigned int i = 0; i < axes; ++i)
             caps.axes[getAxis(i)] = true;
         return caps;
@@ -1100,8 +1100,8 @@ JoystickState JoystickImpl::updateXInput()
     {
         // probably device not connected.
         xInputSlots[m_xInputIndex] = false;
-        m_state       = {0};
-        m_xInputIndex = 0xFFFFFFFF;
+        m_state                    = {0};
+        m_xInputIndex              = 0xFFFFFFFF;
         return m_state;
     }
 
