@@ -45,6 +45,22 @@
 
 #include <cmath>
 
+// Used for XInput matching
+#include <oleauto.h>
+#include <wbemidl.h>
+#include <Xinput.h>
+
+#ifndef SAFE_RELEASE
+#define SAFE_RELEASE(p)     \
+    {                       \
+        if (p)              \
+        {                   \
+            (p)->Release(); \
+            (p) = nullptr;  \
+        }                   \
+    }
+#endif
+
 
 ////////////////////////////////////////////////////////////
 // DirectInput
@@ -84,6 +100,7 @@ struct JoystickRecord
     GUID         guid{};
     unsigned int index{};
     bool         plugged{};
+    bool         xInputDevice{};
 };
 
 using JoystickList = std::vector<JoystickRecord>;
@@ -100,6 +117,156 @@ JoystickBlacklist joystickBlacklist;
 
 const DWORD directInputEventBufferSize = 32;
 } // namespace
+
+// for XInput 
+namespace
+{
+constexpr std::size_t XINPUT_MAX_DEVICES{4};
+std::vector<bool>     xInputSlots{};
+bool                  directInputNeedsInvalidation{};
+
+[[nodiscard]] sf::Joystick::Axis getAxis(std::size_t index)
+{
+    switch (index)
+    {
+        case 0:
+            return sf::Joystick::Axis::X;
+        case 1:
+            return sf::Joystick::Axis::Y;
+        case 2:
+            return sf::Joystick::Axis::Z;
+        case 3:
+            return sf::Joystick::Axis::R;
+        case 4:
+            return sf::Joystick::Axis::U;
+        case 5:
+            return sf::Joystick::Axis::V;
+        case 6:
+            return sf::Joystick::Axis::PovX;
+        case 7:
+            return sf::Joystick::Axis::PovY;
+        default:
+            throw std::out_of_range("index is out of range.");
+    }
+}
+
+// See also https://learn.microsoft.com/en-us/windows/win32/xinput/xinput-and-directinput?redirectedfrom=MSDN
+[[nodiscard]] BOOL IsXInputDevice(const GUID* pGuidProductFromDirectInput)
+{
+    IWbemLocator*         pIWbemLocator   = nullptr;
+    IEnumWbemClassObject* pEnumDevices    = nullptr;
+    IWbemClassObject*     pDevices[20]    = {};
+    IWbemServices*        pIWbemServices  = nullptr;
+    BSTR                  bstrNamespace   = nullptr;
+    BSTR                  bstrDeviceID    = nullptr;
+    BSTR                  bstrClassName   = nullptr;
+    bool                  bIsXinputDevice = false;
+
+    CoInitialize(nullptr);
+
+     // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
+    VARIANT var = {};
+    VariantInit(&var);
+
+    // Create WMI
+    auto hr = CoCreateInstance(__uuidof(WbemLocator), nullptr, CLSCTX_INPROC_SERVER, __uuidof(IWbemLocator), (LPVOID*)&pIWbemLocator);
+    if (FAILED(hr) || pIWbemLocator == nullptr)
+        goto LCleanup;
+
+    bstrNamespace = SysAllocString(L"\\\\.\\root\\cimv2");
+    if (bstrNamespace == nullptr)
+        goto LCleanup;
+    bstrClassName = SysAllocString(L"Win32_PNPEntity");
+    if (bstrClassName == nullptr)
+        goto LCleanup;
+    bstrDeviceID = SysAllocString(L"DeviceID");
+    if (bstrDeviceID == nullptr)
+        goto LCleanup;
+
+    // Connect to WMI
+    hr = pIWbemLocator->ConnectServer(bstrNamespace, nullptr, nullptr, 0L, 0L, nullptr, nullptr, &pIWbemServices);
+    if (FAILED(hr) || pIWbemServices == nullptr)
+        goto LCleanup;
+
+    // Switch security level to IMPERSONATE.
+    hr = CoSetProxyBlanket(pIWbemServices,
+                           RPC_C_AUTHN_WINNT,
+                           RPC_C_AUTHZ_NONE,
+                           nullptr,
+                           RPC_C_AUTHN_LEVEL_CALL,
+                           RPC_C_IMP_LEVEL_IMPERSONATE,
+                           nullptr,
+                           EOAC_NONE);
+    if (FAILED(hr))
+        goto LCleanup;
+
+    hr = pIWbemServices->CreateInstanceEnum(bstrClassName, 0, nullptr, &pEnumDevices);
+    if (FAILED(hr) || pEnumDevices == nullptr)
+        goto LCleanup;
+
+    // Loop over all devices
+    for (;;)
+    {
+        ULONG uReturned = 0;
+        hr              = pEnumDevices->Next(10000, _countof(pDevices), pDevices, &uReturned);
+        if (FAILED(hr))
+            goto LCleanup;
+        if (uReturned == 0)
+            break;
+
+        for (size_t iDevice = 0; iDevice < uReturned; ++iDevice)
+        {
+            // For each device, get its device ID
+            hr = pDevices[iDevice]->Get(bstrDeviceID, 0L, &var, nullptr, nullptr);
+            if (SUCCEEDED(hr) && var.vt == VT_BSTR && var.bstrVal != nullptr)
+            {
+                // Check if the device ID contains "IG_".  If it does, then it's an XInput device
+                // This information cannot be found from DirectInput
+                if (wcsstr(var.bstrVal, L"IG_"))
+                {
+                    // If it does, then get the VID/PID from var.bstrVal
+                    DWORD  dwPid = 0, dwVid = 0;
+                    WCHAR* strVid = wcsstr(var.bstrVal, L"VID_");
+                    if (strVid && swscanf_s(strVid, L"VID_%4X", &dwVid) != 1)
+                        dwVid = 0;
+                    WCHAR* strPid = wcsstr(var.bstrVal, L"PID_");
+                    if (strPid && swscanf_s(strPid, L"PID_%4X", &dwPid) != 1)
+                        dwPid = 0;
+
+                    // Compare the VID/PID to the DInput device
+                    DWORD dwVidPid = MAKELONG(dwVid, dwPid);
+                    if (dwVidPid == pGuidProductFromDirectInput->Data1)
+                    {
+                        bIsXinputDevice = true;
+                        goto LCleanup;
+                    }
+                }
+            }
+            VariantClear(&var);
+            SAFE_RELEASE(pDevices[iDevice]);
+        }
+    }
+
+LCleanup:
+    VariantClear(&var);
+
+    if (bstrNamespace)
+        SysFreeString(bstrNamespace);
+    if (bstrDeviceID)
+        SysFreeString(bstrDeviceID);
+    if (bstrClassName)
+        SysFreeString(bstrClassName);
+
+    for (size_t iDevice = 0; iDevice < _countof(pDevices); ++iDevice)
+        SAFE_RELEASE(pDevices[iDevice]);
+
+    SAFE_RELEASE(pEnumDevices);
+    SAFE_RELEASE(pIWbemLocator);
+    SAFE_RELEASE(pIWbemServices);
+
+    return bIsXinputDevice;
+}
+}
 
 
 ////////////////////////////////////////////////////////////
@@ -206,6 +373,8 @@ namespace sf::priv
 ////////////////////////////////////////////////////////////
 void JoystickImpl::initialize()
 {
+    xInputSlots.resize(XINPUT_MAX_DEVICES);
+
     // Try to initialize DirectInput
     initializeDInput();
 
@@ -228,6 +397,12 @@ void JoystickImpl::cleanup()
 ////////////////////////////////////////////////////////////
 bool JoystickImpl::isConnected(unsigned int index)
 {
+    if (directInputNeedsInvalidation)
+    {
+        directInputNeedsInvalidation = false;
+        updateConnections();
+    }
+
     if (directInput)
         return isConnectedDInput(index);
 
@@ -249,6 +424,11 @@ bool JoystickImpl::isConnected(unsigned int index)
 void JoystickImpl::setLazyUpdates(bool status)
 {
     lazyUpdates = status;
+}
+
+void JoystickImpl::invalidateDevices()
+{
+    directInputNeedsInvalidation = true;
 }
 
 ////////////////////////////////////////////////////////////
@@ -305,6 +485,16 @@ void JoystickImpl::close()
 ////////////////////////////////////////////////////////////
 JoystickCaps JoystickImpl::getCapabilities() const
 {
+    if (m_useXInput)
+    {
+        // XInput has 14 Buttons and 6 Axes
+        JoystickCaps caps{0};
+        caps.buttonCount    = 14;
+        constexpr auto axes             = 6;
+        for (unsigned int i = 0; i < axes; ++i)
+            caps.axes[getAxis(i)] = true;
+        return caps;
+    }
     if (directInput)
         return getCapabilitiesDInput();
 
@@ -337,6 +527,17 @@ Joystick::Identification JoystickImpl::getIdentification() const
 ////////////////////////////////////////////////////////////
 JoystickState JoystickImpl::update()
 {
+    if (directInputNeedsInvalidation)
+    {
+        directInputNeedsInvalidation = false;
+        updateConnections();
+    }
+
+    if (m_useXInput)
+    {
+        return updateXInput();
+    }
+
     if (directInput)
     {
         if (m_buffered)
@@ -532,6 +733,7 @@ bool JoystickImpl::openDInput(unsigned int index)
     {
         if (record.index == index)
         {
+            m_useXInput = record.xInputDevice;
             // Create device
             HRESULT result = directInput->CreateDevice(record.guid, &m_device, nullptr);
 
@@ -580,6 +782,12 @@ bool JoystickImpl::openDInput(unsigned int index)
 
             if (SUCCEEDED(m_device->GetProperty(DIPROP_PRODUCTNAME, &stringProperty.diph)))
                 m_identification.name = stringProperty.wsz;
+
+            if (m_useXInput)
+            {
+                // use XInput instead of DirectInput for obtaining caps and data
+                return true;
+            }
 
             static bool         formatInitialized = false;
             static DIDATAFORMAT format;
@@ -863,6 +1071,77 @@ JoystickCaps JoystickImpl::getCapabilitiesDInput() const
     return caps;
 }
 
+////////////////////////////////////////////////////////////
+JoystickState JoystickImpl::updateXInput()
+{
+    // No identified index yet
+    if (m_xInputIndex == 0xFFFFFFFF)
+    {
+        for (auto i = 0; i < xInputSlots.size(); i++)
+        {
+            bool taken = xInputSlots[i];
+            if (taken)
+            {
+                continue;
+            }
+            else
+            {
+                xInputSlots[i] = true;
+                m_xInputIndex  = i;
+                break;
+            }
+        }
+    }
+
+    XINPUT_STATE xinputState = {0};
+    auto         result      = XInputGetState(m_xInputIndex, &xinputState);
+
+    if (result != S_OK)
+    {
+        // probably device not connected.
+        xInputSlots[m_xInputIndex] = false;
+        m_state       = {0};
+        m_xInputIndex = 0xFFFFFFFF;
+        return m_state;
+    }
+
+    auto& state       = m_state;
+    auto& gamepad     = xinputState.Gamepad;
+    state.buttons[0]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_A);
+    state.buttons[1]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_B);
+    state.buttons[2]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_X);
+    state.buttons[3]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_Y);
+    state.buttons[4]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP);
+    state.buttons[5]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
+    state.buttons[6]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
+    state.buttons[7]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
+    state.buttons[8]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_START);
+    state.buttons[9]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_BACK);
+    state.buttons[10] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
+    state.buttons[11] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    state.buttons[12] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB);
+    state.buttons[13] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB);
+
+    const SHORT deadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE / 4;
+
+    // XInput thumbsticks range from -32767 to 32767 - to scale them to -100.0f .. 100.0f divide by the below factor
+    constexpr auto thumbstickScaleFactor = 327.670f;
+
+    state.axes[Joystick::Axis::X] = (std::abs(gamepad.sThumbLX) < deadzone) ? 0.0f : gamepad.sThumbLX / thumbstickScaleFactor;
+    state.axes[Joystick::Axis::Y] = (std::abs(gamepad.sThumbLY) < deadzone) ? 0.0f : gamepad.sThumbLY / thumbstickScaleFactor;
+    state.axes[Joystick::Axis::Z] = (std::abs(gamepad.sThumbRX) < deadzone) ? 0.0f : gamepad.sThumbRX / thumbstickScaleFactor;
+    state.axes[Joystick::Axis::R] = (std::abs(gamepad.sThumbRY) < deadzone) ? 0.0f : gamepad.sThumbRY / thumbstickScaleFactor;
+
+    // XInput triggers range between 0 and 255 - to scale them to 0.0f .. 100.0f divide by the below factor
+    constexpr auto triggerScaleFactor = 2.55f;
+    state.axes[Joystick::Axis::U]     = gamepad.bLeftTrigger / triggerScaleFactor;
+    state.axes[Joystick::Axis::V]     = gamepad.bRightTrigger / triggerScaleFactor;
+
+    state.connected = true;
+
+    return state;
+}
+
 
 ////////////////////////////////////////////////////////////
 JoystickState JoystickImpl::updateDInputBuffered()
@@ -1064,13 +1343,22 @@ BOOL CALLBACK JoystickImpl::deviceEnumerationCallback(const DIDEVICEINSTANCE* de
     {
         if (record.guid == deviceInstance->guidInstance)
         {
+            if (IsXInputDevice(&deviceInstance->guidProduct))
+            {
+                record.xInputDevice = true;
+            }
+
             record.plugged = true;
 
             return DIENUM_CONTINUE;
         }
     }
 
-    const JoystickRecord record = {deviceInstance->guidInstance, sf::Joystick::Count, true};
+    JoystickRecord record = {deviceInstance->guidInstance, sf::Joystick::Count, true};
+    if (IsXInputDevice(&deviceInstance->guidProduct))
+    {
+        record.xInputDevice = true;
+    }
     joystickList.push_back(record);
 
     return DIENUM_CONTINUE;
