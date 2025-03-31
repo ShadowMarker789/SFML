@@ -150,7 +150,7 @@ bool                  directInputNeedsInvalidation{};
     }
 }
 
-struct xinputCleanupData
+struct XInputCleanupData
 {
     VARIANT                           var            = {};
     IWbemLocator*                     pIWbemLocator  = nullptr;
@@ -162,7 +162,7 @@ struct xinputCleanupData
     BSTR                              bstrClassName  = nullptr;
 };
 
-void safeCleanup(xinputCleanupData& data)
+void safeCleanup(XInputCleanupData& data)
 {
     VariantClear(&data.var);
 
@@ -173,8 +173,8 @@ void safeCleanup(xinputCleanupData& data)
     if (data.bstrClassName)
         SysFreeString(data.bstrClassName);
 
-    for (size_t iDevice = 0; iDevice < data.pDevices.size(); ++iDevice)
-        SAFE_RELEASE(data.pDevices[iDevice]);
+    for (auto* device : data.pDevices)
+        SAFE_RELEASE(device);
 
     SAFE_RELEASE(data.pEnumDevices);
     SAFE_RELEASE(data.pIWbemLocator);
@@ -184,14 +184,14 @@ void safeCleanup(xinputCleanupData& data)
 // See also https://learn.microsoft.com/en-us/windows/win32/xinput/xinput-and-directinput?redirectedfrom=MSDN
 [[nodiscard]] BOOL isXInputDevice(const GUID* pGuidProductFromDirectInput)
 {
-    xinputCleanupData data;
+    XInputCleanupData data;
     bool              bisXInputDevice = false;
-    HRESULT           hr;
+    HRESULT           hr              = {};
 
     // So we can call VariantClear() later, even if we never had a successful IWbemClassObject::Get().
     VARIANT var = {};
 
-    HRESULT comInit = CoInitialize(nullptr);
+    const HRESULT comInit = CoInitialize(nullptr);
     if (FAILED(comInit))
     {
         safeCleanup(data);
@@ -297,7 +297,7 @@ void safeCleanup(xinputCleanupData& data)
                         dwPid = 0;
 
                     // Compare the VID/PID to the DInput device
-                    DWORD dwVidPid = MAKELONG(dwVid, dwPid);
+                    const DWORD dwVidPid = MAKELONG(dwVid, dwPid);
                     if (dwVidPid == pGuidProductFromDirectInput->Data1)
                     {
                         bisXInputDevice = true;
@@ -1133,10 +1133,6 @@ JoystickState JoystickImpl::updateXInput()
                 xInputSlots[i] = true;
                 m_xInputIndex  = static_cast<DWORD>(i);
                 break;
-            }
-            else
-            {
-                continue;
             }
         }
     }
