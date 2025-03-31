@@ -74,10 +74,12 @@ UINT_PTR                            timerHandle{};
 // Raw Input Chunks
 constexpr auto             rawInputChunkSize = 512;
 std::vector<std::byte>     preparsedDataChunk;
+std::vector<std::byte>     buttonCapsDataChunk;
 std::vector<std::byte>     valueCapsDataChunk;
 std::vector<std::byte>     deviceNameDataChunk;
 std::vector<std::uint16_t> usageSizeDataChunk;
 std::vector<std::byte>     deviceHumanNameDataChunk;
+std::vector<std::byte>     rawDataDataChunk;
 } // namespace
 
 namespace
@@ -170,7 +172,7 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
     JoystickImpl joystickImpl{};
     joystickImpl.m_lastDeviceHandle = deviceHandle;
     joystickImpl.m_index            = static_cast<std::uint32_t>(joysticks.size());
-    joystickImpl.m_state.connected  = true;
+    joystickImpl.m_state.connected  = false; // we register as connected on first normal update actually! 
 
     UINT nameSize{};
     // This looks weird, but the docs say to call it twice like this
@@ -192,7 +194,7 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
         {
             joystickImpl.m_identification.vendorId  = result->vid;
             joystickImpl.m_identification.productId = result->pid;
-            joystickImpl.m_useXInput                = true; // TODO Why is isXInput ignored?
+            joystickImpl.m_useXInput                = isXInput; // TODO Why is isXInput ignored?
         }
     }
 
@@ -205,38 +207,12 @@ void JoystickImpl::dispatchDeviceConnected(HANDLE deviceHandle)
         constexpr auto axes             = 6;
         for (unsigned int i = 0; i < axes; ++i)
             joystickImpl.m_caps.axes[getAxis(i)] = true;
+        // except for XInput devices which is different
+        joystickImpl.m_state.connected = true;
     }
     else
     {
-        // RawInput query capabilities
-        UINT buffSize{};
-        if (const auto result = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, nullptr, &buffSize);
-            FAILED(result))
-        {
-            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
-                  << "]" << std::endl;
-            return;
-        }
-        if (const auto result = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, preparsedDataChunk.data(), &buffSize);
-            FAILED(result))
-        {
-            err() << "GetRawInputData returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
-                  << "]" << std::endl;
-            return;
-        }
-        auto*     preparsedData = reinterpret_cast<PHIDP_PREPARSED_DATA>(preparsedDataChunk.data());
-        HIDP_CAPS hCaps{};
-        if (const auto result = HidP_GetCaps(preparsedData, &hCaps); FAILED(result))
-        {
-            err() << "HidP_GetCaps returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
-                  << std::endl;
-            return;
-        }
-
-        joystickImpl.m_caps.buttonCount = hCaps.NumberInputButtonCaps;
-        const auto axes                 = hCaps.NumberInputValueCaps;
-        for (std::size_t i = 0; i < Joystick::AxisCount && i < axes; ++i)
-            joystickImpl.m_caps.axes[getAxis(i)] = true;
+        // INFO: RawInput query capabilities is done during WM_INPUT
     }
 
     unsigned int xInputIndex = 0;
@@ -281,20 +257,28 @@ void JoystickImpl::dispatchDeviceRemoved(HANDLE deviceHandle)
 ////////////////////////////////////////////////////////////
 void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
 {
-    UINT bufferSize = sizeof(RAWINPUT);
-    // a bigger stack-alloc, but since we spawned a separate thread for this we have plenty of stack memory
-    RAWINPUT  rawInput{};
+    UINT bufferSize = NULL;
     HIDP_CAPS hCaps{};
 
-    // It's nice being able to allocate an entire RAWINPUT on the stack, apparently RawInput has been around so long
-    // that folk used to malloc for it.
-    if (const auto uiResult = GetRawInputData(inputDevice, RID_INPUT, &rawInput, &bufferSize, sizeof(RAWINPUTHEADER));
+    if (const auto uiResult = GetRawInputData(inputDevice, RID_INPUT, NULL, &bufferSize, sizeof(RAWINPUTHEADER));
+        uiResult == UINT_MAX)
+    {
+        err() << "GetRawInputData returned [" << uiResult << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
+              << std::endl;
+        return;
+    }
+
+    rawDataDataChunk.resize(static_cast<size_t>(bufferSize));
+
+    if (const auto uiResult = GetRawInputData(inputDevice, RID_INPUT, rawDataDataChunk.data(), &bufferSize, sizeof(RAWINPUTHEADER));
         uiResult == UINT_MAX || uiResult != bufferSize)
     {
         err() << "GetRawInputData returned [" << uiResult << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
               << std::endl;
         return;
     }
+
+    RAWINPUT& rawInput = *reinterpret_cast<RAWINPUT*>(rawDataDataChunk.data());
 
     // Proceed only if this is a HID device.
     if (rawInput.header.dwType == RIM_TYPEHID)
@@ -333,6 +317,11 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
             return;
         }
 
+        if (preparsedDataChunk.size() < static_cast<size_t>(bufferSize))
+        {
+            preparsedDataChunk.resize(static_cast<size_t>(bufferSize));
+        }
+
         if (const auto uiResult = GetRawInputDeviceInfoW(deviceHandle, RIDI_PREPARSEDDATA, preparsedDataChunk.data(), &bufferSize);
             uiResult == UINT_MAX)
         {
@@ -350,61 +339,76 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
             return;
         }
 
+        const auto axes                 = hCaps.NumberInputValueCaps;
+        for (std::size_t i = 0; i < Joystick::AxisCount && i < axes; ++i)
+            targetJoystick.m_caps.axes[getAxis(i)] = true;
+
         std::uint16_t    capsLength = hCaps.NumberInputButtonCaps;
-        HIDP_BUTTON_CAPS hButtonCaps{};
-        if (const auto result = HidP_GetButtonCaps(HidP_Input, &hButtonCaps, &capsLength, preparsedData); FAILED(result))
+        
+        if (const auto result = HidP_GetButtonCaps(HidP_Input, reinterpret_cast<PHIDP_BUTTON_CAPS>(buttonCapsDataChunk.data()), &capsLength, preparsedData); FAILED(result))
         {
             err() << "HidP_GetButtonCaps returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
                   << "]" << std::endl;
             return;
         }
 
-        ULONG buttonCount = hButtonCaps.Range.UsageMax - hButtonCaps.Range.UsageMin + 1u;
+        ULONG totalButtonsCount = 0;
+        ULONG startingButtonIndex = 0u;
 
-        if (const auto result = HidP_GetUsages(HidP_Input,
-                                               hButtonCaps.UsagePage,
-                                               0,
-                                               usageSizeDataChunk.data(),
-                                               &buttonCount,
-                                               preparsedData,
-                                               reinterpret_cast<PCHAR>(rawInput.data.hid.bRawData),
-                                               rawInput.data.hid.dwSizeHid);
-            FAILED(result))
+        for (std::uint16_t i = 0; i < capsLength; i++)
         {
-            err() << "HidP_GetUsages returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError() << "]"
-                  << std::endl;
-            return;
-        }
+            HIDP_BUTTON_CAPS& hButtonCaps = reinterpret_cast<PHIDP_BUTTON_CAPS>(buttonCapsDataChunk.data())[i];
 
-        if (buttonCount == 0)
-        {
-            // No buttons are down.
-            for (std::size_t buttonIndex = 0; buttonIndex < Joystick::ButtonCount; ++buttonIndex)
-                targetJoystick.m_state.buttons[buttonIndex] = false;
-        }
-        else
-        {
-            // Process button states from Raw Input HID report.
-            // usageSizeDataChunk contains a sparse list of pressed button usages (e.g., 1, 3, 5).
-            // We iterate over all possible buttons (0 to Joystick::ButtonCount-1), setting true for pressed buttons
-            // and false for others, using rawInputButtonIndex to track the next pressed button in the chunk.
-            // A traditional for-loop is used because the loop manages two sequences (all buttons and pressed buttons),
-            // with conditional index increments, which doesn't fit range-for's single-container model without added complexity.
-            std::size_t rawInputButtonIndex = 0;
-            for (std::size_t buttonIndex = 0; buttonIndex < Joystick::ButtonCount; ++buttonIndex)
+            ULONG buttonCount = hButtonCaps.Range.UsageMax - hButtonCaps.Range.UsageMin + 1u;
+            totalButtonsCount += buttonCount;
+
+            if (const auto result = HidP_GetUsages(HidP_Input,
+                                                   hButtonCaps.UsagePage,
+                                                   0,
+                                                   usageSizeDataChunk.data(),
+                                                   &buttonCount,
+                                                   preparsedData,
+                                                   reinterpret_cast<PCHAR>(rawInput.data.hid.bRawData),
+                                                   rawInput.data.hid.dwSizeHid);
+                FAILED(result))
             {
-                // UsageMin tells us what button is the lowest, so we subtract it. The Hid spec is weird.
-                const auto rawInputButton = usageSizeDataChunk[rawInputButtonIndex] - hButtonCaps.Range.UsageMin;
-                if (static_cast<std::size_t>(rawInputButton) == buttonIndex)
-                {
-                    targetJoystick.m_state.buttons[buttonIndex] = true;
-                    ++rawInputButtonIndex; // Move to check next pressed button
-                }
-                else
-                {
+                err() << "HidP_GetUsages returned [" << result << "] unexpectedly! GetLastError: [" << GetLastError()
+                      << "]" << std::endl;
+                return;
+            }
+
+            if (buttonCount == 0)
+            {
+                // No buttons are down.
+                for (std::size_t buttonIndex = startingButtonIndex; buttonIndex < Joystick::ButtonCount; ++buttonIndex)
                     targetJoystick.m_state.buttons[buttonIndex] = false;
+            }
+            else
+            {
+                // Process button states from Raw Input HID report.
+                // usageSizeDataChunk contains a sparse list of pressed button usages (e.g., 1, 3, 5).
+                // We iterate over all possible buttons (0 to Joystick::ButtonCount-1), setting true for pressed buttons
+                // and false for others, using rawInputButtonIndex to track the next pressed button in the chunk.
+                // A traditional for-loop is used because the loop manages two sequences (all buttons and pressed buttons),
+                // with conditional index increments, which doesn't fit range-for's single-container model without added complexity.
+                std::size_t rawInputButtonIndex = 0;
+                for (std::size_t buttonIndex = startingButtonIndex; buttonIndex < Joystick::ButtonCount; ++buttonIndex)
+                {
+                    // UsageMin tells us what button is the lowest, so we subtract it. The Hid spec is weird.
+                    const auto rawInputButton = usageSizeDataChunk[rawInputButtonIndex] - hButtonCaps.Range.UsageMin;
+                    if (static_cast<std::size_t>(rawInputButton) == buttonIndex)
+                    {
+                        targetJoystick.m_state.buttons[buttonIndex] = true;
+                        ++rawInputButtonIndex; // Move to check next pressed button
+                    }
+                    else
+                    {
+                        targetJoystick.m_state.buttons[buttonIndex] = false;
+                    }
                 }
             }
+
+            startingButtonIndex += totalButtonsCount;
         }
 
         auto* pValueCaps = reinterpret_cast<PHIDP_VALUE_CAPS>(valueCapsDataChunk.data());
@@ -416,7 +420,7 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
             return;
         }
 
-        for (std::size_t i = 0; i < hCaps.NumberInputValueCaps; ++i)
+        for (std::size_t i = 0; i < hCaps.NumberInputValueCaps && i < Joystick::AxisCount; ++i)
         {
             ULONG rawValue{};
             if (const auto result = HidP_GetUsageValue(HidP_Input,
@@ -457,14 +461,16 @@ void JoystickImpl::dispatchRawInput(HRAWINPUT inputDevice)
                 outputValue = -100.0f + (static_cast<float>(rawValue) - min) * 200.0f / (max - min);
 
             targetJoystick.m_state.axes[getAxis(i)] = outputValue;
+            targetJoystick.m_caps.buttonCount       = static_cast<unsigned int>(totalButtonsCount);
+            targetJoystick.m_state.connected = true;
         }
     }
 }
 
-
 ////////////////////////////////////////////////////////////
 void JoystickImpl::dispatchXInput()
 {
+    sf::err() << "dispatchXInput" << std::endl;
     // valid XInput indexes are 0, 1, 2, and 3.
     for (const DWORD xinputIndex : {0ul, 1ul, 2ul, 3ul})
     {
@@ -540,6 +546,7 @@ void JoystickImpl::dispatchXInput()
 ////////////////////////////////////////////////////////////
 DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
 {
+    sf::err() << "win32JoystickDispatchThread" << std::endl;
     // Required
     if (const auto coInitResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); FAILED(coInitResult))
     {
@@ -629,6 +636,7 @@ DWORD WINAPI JoystickImpl::win32JoystickDispatchThread(LPVOID /* lpParam */)
 ////////////////////////////////////////////////////////////
 void JoystickImpl::initialize()
 {
+    sf::err() << "initialize" << std::endl;
     // We'll be churning through data routinely, so it's simply more efficient to
     // allocate a chunk once and reuse it rather than allocating over and over again.
     // 2.5kB-ish in total heap memory is more than enough to hold the longest name
@@ -638,6 +646,7 @@ void JoystickImpl::initialize()
     deviceNameDataChunk.resize(rawInputChunkSize);
     usageSizeDataChunk.resize(rawInputChunkSize);
     deviceHumanNameDataChunk.resize(rawInputChunkSize);
+    buttonCapsDataChunk.resize(rawInputChunkSize);
 
     for (std::size_t i = 0; i < Joystick::Count; ++i)
     {
