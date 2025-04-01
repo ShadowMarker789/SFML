@@ -560,8 +560,6 @@ JoystickCaps JoystickImpl::getCapabilities() const
     if (m_useXInput)
     {
         // XInput has 10 Buttons (since we exclude the DPad) and all 8 Axes
-
-
         JoystickCaps caps{0};
         caps.buttonCount    = 10;
         constexpr auto axes = 8;
