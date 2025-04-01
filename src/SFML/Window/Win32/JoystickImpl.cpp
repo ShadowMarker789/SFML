@@ -438,7 +438,7 @@ void JoystickImpl::initialize()
     auto* xinputModule = LoadLibraryA("XInput1_4.dll");
     if (!xinputModule)
     {
-        // this always succeeds. 
+        // this always succeeds.
         xinputModule = LoadLibraryA("XINPUT9_1_0.DLL");
     }
     assert(xinputModule != nullptr);
