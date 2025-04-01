@@ -439,7 +439,7 @@ void JoystickImpl::initialize()
     if (xinputModule)
     {
         m_XInputGetState = reinterpret_cast<XInputGetState_t>(
-            static_cast<void*>(GetProcAddress(xinputModule, "XInputGetState")));
+            reinterpret_cast<void*>(GetProcAddress(xinputModule, "XInputGetState")));
     }
     else
     {
