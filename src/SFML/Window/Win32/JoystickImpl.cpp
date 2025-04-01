@@ -297,7 +297,7 @@ void safeCleanup(XInputCleanupData& data)
                         dwPid = 0;
 
                     // Compare the VID/PID to the DInput device
-                    const DWORD dwVidPid = static_cast<DWORD>(MAKELONG(dwVid, dwPid));
+                    const auto dwVidPid = static_cast<DWORD>(MAKELONG(dwVid, dwPid));
                     if (dwVidPid == pGuidProductFromDirectInput->Data1)
                     {
                         bisXInputDevice = true;
