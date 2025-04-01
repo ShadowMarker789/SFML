@@ -233,7 +233,7 @@ void safeCleanup(XInputCleanupData& data)
 
     // Connect to WMI
     hr = data.pIWbemLocator
-             ->ConnectServer(data.bstrNamespace, nullptr, nullptr, nullptr, NULL, nullptr, nullptr, &data.pIWbemServices);
+             ->ConnectServer(data.bstrNamespace, nullptr, nullptr, nullptr, 0L, nullptr, nullptr, &data.pIWbemServices);
     if (FAILED(hr) || data.pIWbemServices == nullptr)
     {
         safeCleanup(data);
@@ -297,7 +297,7 @@ void safeCleanup(XInputCleanupData& data)
                         dwPid = 0;
 
                     // Compare the VID/PID to the DInput device
-                    const DWORD dwVidPid = MAKELONG(dwVid, dwPid);
+                    const DWORD dwVidPid = static_cast<DWORD>(MAKELONG(dwVid, dwPid));
                     if (dwVidPid == pGuidProductFromDirectInput->Data1)
                     {
                         bisXInputDevice = true;
