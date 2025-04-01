@@ -201,10 +201,10 @@ void safeCleanup(XInputCleanupData& data)
     VariantInit(&var);
 
     // Create WMI
-    hr = CoCreateInstance(__uuidof(WbemLocator),
+    hr = CoCreateInstance(CLSID_WbemLocator,
                           nullptr,
                           CLSCTX_INPROC_SERVER,
-                          __uuidof(IWbemLocator),
+                          IID_IWbemLocator,
                           reinterpret_cast<LPVOID*>(&data.pIWbemLocator));
     if (FAILED(hr) || data.pIWbemLocator == nullptr)
     {
