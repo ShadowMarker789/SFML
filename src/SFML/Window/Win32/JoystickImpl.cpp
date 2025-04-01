@@ -172,9 +172,9 @@ const IID IID_IWbemLocator = {0xdc12a687, 0x737f, 0x11cf, {0x88, 0x4d, 0x00, 0xa
 // NOLINTEND(readability-identifier-naming)
 
 // Function pointer type for XInputGetState
-typedef DWORD(WINAPI* XInputGetState_t)(DWORD dwUserIndex, XINPUT_STATE* pState);
+using XInputGetState_t = DWORD(WINAPI*)(DWORD dwUserIndex, XINPUT_STATE* pState);
 
-XInputGetState_t m_sXInputGetState = nullptr;
+XInputGetState_t m_XInputGetState = nullptr;
 
 void safeCleanup(XInputCleanupData& data)
 {
@@ -435,14 +435,15 @@ namespace sf::priv
 ////////////////////////////////////////////////////////////
 void JoystickImpl::initialize()
 {
-    auto xinputModule = LoadLibraryA("XInput1_4.dll");
+    auto* xinputModule = LoadLibraryA("XInput1_4.dll");
     if (xinputModule)
     {
-        m_sXInputGetState = reinterpret_cast<XInputGetState_t>(GetProcAddress(xinputModule , "XInputGetState"));
+        m_XInputGetState = reinterpret_cast<XInputGetState_t>(
+            static_cast<void*>(GetProcAddress(xinputModule, "XInputGetState")));
     }
     else
     {
-        // just for debugging the pipeline 
+        // just for debugging the pipeline
         exit(-1);
     }
 
@@ -1163,7 +1164,7 @@ JoystickState JoystickImpl::updateXInput()
     }
 
     XINPUT_STATE xinputState = {};
-    auto         result      = m_sXInputGetState(m_xInputIndex, &xinputState);
+    auto         result      = m_XInputGetState(m_xInputIndex, &xinputState);
 
     if (result != S_OK)
     {
