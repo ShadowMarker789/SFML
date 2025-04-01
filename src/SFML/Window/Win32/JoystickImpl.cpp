@@ -162,6 +162,12 @@ struct XInputCleanupData
     BSTR                              bstrClassName  = nullptr;
 };
 
+// Define CLSID_WbemLocator
+const CLSID CLSID_WbemLocator = {0x4590f811, 0x1d3a, 0x11d0, {0x89, 0x1f, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
+
+// Define IID_IWbemLocator
+const IID IID_IWbemLocator = {0xdc12a687, 0x737f, 0x11cf, {0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24}};
+
 void safeCleanup(XInputCleanupData& data)
 {
     VariantClear(&data.var);
