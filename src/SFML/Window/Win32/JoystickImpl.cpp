@@ -559,10 +559,12 @@ JoystickCaps JoystickImpl::getCapabilities() const
 {
     if (m_useXInput)
     {
-        // XInput has 14 Buttons and 6 Axes
+        // XInput has 10 Buttons (since we exclude the DPad) and all 8 Axes
+
+
         JoystickCaps caps{0};
-        caps.buttonCount    = 14;
-        constexpr auto axes = 6;
+        caps.buttonCount    = 10;
+        constexpr auto axes = 8;
         for (unsigned int i = 0; i < axes; ++i)
             caps.axes[getAxis(i)] = true;
         return caps;
@@ -1173,24 +1175,24 @@ JoystickState JoystickImpl::updateXInput()
         return m_state;
     }
 
-    auto& state       = m_state;
-    auto& gamepad     = xinputState.Gamepad;
-    state.buttons[0]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_A);
-    state.buttons[1]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_B);
-    state.buttons[2]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_X);
-    state.buttons[3]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_Y);
-    state.buttons[4]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP);
-    state.buttons[5]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
-    state.buttons[6]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
-    state.buttons[7]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
-    state.buttons[8]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_START);
-    state.buttons[9]  = !!(gamepad.wButtons & XINPUT_GAMEPAD_BACK);
-    state.buttons[10] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
-    state.buttons[11] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
-    state.buttons[12] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB);
-    state.buttons[13] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB);
+    // INFO: After consideration, the Directional Pad will be exposed as PovX and PovY axes for consistency with PS5 DualSense controllers.
 
-    const SHORT deadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE / 4;
+    auto& state      = m_state;
+    auto& gamepad    = xinputState.Gamepad;
+    state.buttons[0] = !!(gamepad.wButtons & XINPUT_GAMEPAD_A);
+    state.buttons[1] = !!(gamepad.wButtons & XINPUT_GAMEPAD_B);
+    state.buttons[2] = !!(gamepad.wButtons & XINPUT_GAMEPAD_X);
+    state.buttons[3] = !!(gamepad.wButtons & XINPUT_GAMEPAD_Y);
+    state.buttons[4] = !!(gamepad.wButtons & XINPUT_GAMEPAD_START);
+    state.buttons[5] = !!(gamepad.wButtons & XINPUT_GAMEPAD_BACK);
+    state.buttons[6] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
+    state.buttons[7] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
+    state.buttons[8] = !!(gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB);
+    state.buttons[9] = !!(gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB);
+
+    // The standard deadzone felt, too... dead. This feels reasonable, but should it be configurable?
+    // Threshold is ... different, and NOT a deadzone, but instead a required delta between inputs to event an update.
+    const SHORT deadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE / 2;
 
     // XInput thumbsticks range from -32767 to 32767 - to scale them to -100.0f .. 100.0f divide by the below factor
     constexpr auto thumbstickScaleFactor = 327.670f;
@@ -1199,6 +1201,48 @@ JoystickState JoystickImpl::updateXInput()
     state.axes[Joystick::Axis::Y] = (std::abs(gamepad.sThumbLY) < deadzone) ? 0.0f : gamepad.sThumbLY / thumbstickScaleFactor;
     state.axes[Joystick::Axis::Z] = (std::abs(gamepad.sThumbRX) < deadzone) ? 0.0f : gamepad.sThumbRX / thumbstickScaleFactor;
     state.axes[Joystick::Axis::R] = (std::abs(gamepad.sThumbRY) < deadzone) ? 0.0f : gamepad.sThumbRY / thumbstickScaleFactor;
+
+    // D-pad as axes (PovX and PovY) in Cartesian form: 100, -100, or 0
+    const bool dpadUp    = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP);
+    const bool dpadDown  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
+    const bool dpadLeft  = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
+    const bool dpadRight = !!(gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
+
+    // PovX: Right = 100, Left = -100, both/neither = 0
+    if (dpadLeft && dpadRight)
+    {
+        state.axes[Joystick::Axis::PovX] = 0.0f;
+    }
+    else if (dpadRight)
+    {
+        state.axes[Joystick::Axis::PovX] = 100.0f;
+    }
+    else if (dpadLeft)
+    {
+        state.axes[Joystick::Axis::PovX] = -100.0f;
+    }
+    else
+    {
+        state.axes[Joystick::Axis::PovX] = 0.0f;
+    }
+
+    // PovY: Up = 100, Down = -100, both/neither = 0
+    if (dpadUp && dpadDown)
+    {
+        state.axes[Joystick::Axis::PovY] = 0.0f;
+    }
+    else if (dpadUp)
+    {
+        state.axes[Joystick::Axis::PovY] = 100.0f;
+    }
+    else if (dpadDown)
+    {
+        state.axes[Joystick::Axis::PovY] = -100.0f;
+    }
+    else
+    {
+        state.axes[Joystick::Axis::PovY] = 0.0f;
+    }
 
     // XInput triggers range between 0 and 255 - to scale them to 0.0f .. 100.0f divide by the below factor
     constexpr auto triggerScaleFactor = 2.55f;
